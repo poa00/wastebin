@@ -3,12 +3,14 @@ use anyhow::{Context, Result};
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::{Extension, Server};
+use clap::{Parser, Subcommand};
 use once_cell::sync::Lazy;
 use std::env::{self, VarError};
 use std::io;
 use std::net::SocketAddr;
 use std::num::{NonZeroUsize, TryFromIntError};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tower_http::compression::CompressionLayer;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -23,6 +25,27 @@ mod id;
 mod pages;
 #[cfg(test)]
 mod test_helpers;
+mod token;
+
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run the server
+    Serve,
+    /// Issue a new token for a user
+    Token {
+        /// Name of the user for which the token is issued
+        name: String,
+        /// Use if the user has administrative capabilities
+        #[arg(long)]
+        is_admin: bool,
+    },
+}
 
 pub static TITLE: Lazy<String> =
     Lazy::new(|| env::var("WASTEBIN_TITLE").unwrap_or_else(|_| "wastebin".to_string()));
@@ -53,6 +76,10 @@ pub enum Error {
     SyntaxParsing(#[from] syntect::parsing::ParsingError),
     #[error("time formatting error: {0}")]
     TimeFormatting(#[from] time::error::Format),
+    #[error("failed to create token: {0}")]
+    TokenCreation(String),
+    #[error("failed to validate token: {0}")]
+    TokenValidation(String),
 }
 
 pub type Router = axum::Router<http_body::Limited<axum::body::Body>>;
@@ -73,15 +100,22 @@ impl From<Error> for StatusCode {
             | Error::Migration(_)
             | Error::SyntaxHighlighting(_)
             | Error::SyntaxParsing(_)
+            | Error::TokenCreation(_)
             | Error::Axum(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::TokenValidation(_) => StatusCode::UNAUTHORIZED,
         }
     }
 }
 
-pub(crate) fn make_app(cache_layer: cache::Layer, max_body_size: usize) -> axum::Router {
+pub(crate) fn make_app(
+    cache_layer: cache::Layer,
+    issuer: Arc<token::Issuer>,
+    max_body_size: usize,
+) -> axum::Router {
     Router::new()
         .merge(handler::routes())
         .layer(Extension(cache_layer))
+        .layer(Extension(issuer))
         .layer(TimeoutLayer::new(Duration::from_secs(5)))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
@@ -89,14 +123,11 @@ pub(crate) fn make_app(cache_layer: cache::Layer, max_body_size: usize) -> axum:
         .layer(RequestBodyLimitLayer::new(max_body_size))
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+async fn serve(issuer: token::Issuer) -> Result<()> {
     const VAR_DATABASE_PATH: &str = "WASTEBIN_DATABASE_PATH";
     const VAR_CACHE_SIZE: &str = "WASTEBIN_CACHE_SIZE";
     const VAR_ADDRESS_PORT: &str = "WASTEBIN_ADDRESS_PORT";
     const VAR_MAX_BODY_SIZE: &str = "WASTEBIN_MAX_BODY_SIZE";
-
-    tracing_subscriber::fmt::init();
 
     let database = match env::var(VAR_DATABASE_PATH) {
         Ok(path) => Ok(Database::new(db::Open::Path(PathBuf::from(path)))?),
@@ -129,7 +160,8 @@ async fn main() -> Result<()> {
     tracing::debug!("caching {cache_size} paste highlights");
     tracing::debug!("restricting maximum body size to {max_body_size} bytes");
 
-    let service = make_app(cache_layer.clone(), max_body_size).into_make_service();
+    let service =
+        make_app(cache_layer.clone(), Arc::new(issuer), max_body_size).into_make_service();
 
     let server = Server::bind(&addr)
         .serve(service)
@@ -149,4 +181,36 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    const VAR_JWT_SECRET: &str = "WASTEBIN_JWT_SECRET";
+    const VAR_JWT_ISSUER: &str = "WASTEBIN_JWT_ISSUER";
+
+    tracing_subscriber::fmt::init();
+
+    let cli = Cli::parse();
+
+    let secret = env::var(VAR_JWT_SECRET).with_context(|| format!("{VAR_JWT_SECRET} not set"))?;
+    let iss = env::var(VAR_JWT_ISSUER).with_context(|| format!("{VAR_JWT_ISSUER} not set"))?;
+    let issuer = token::Issuer::new(secret.as_bytes(), iss);
+
+    match cli.command {
+        Commands::Serve => serve(issuer).await,
+        Commands::Token { name, is_admin } => {
+            let role = if is_admin {
+                token::Role::Admin
+            } else {
+                token::Role::User
+            };
+
+            let user = token::User { name, role };
+            let token = issuer.issue(user)?;
+
+            println!("Store this token securely: {token}");
+
+            Ok(())
+        }
+    }
 }

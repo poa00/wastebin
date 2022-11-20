@@ -91,3 +91,19 @@ impl<'a> Burn<'a> {
         }
     }
 }
+
+#[derive(Template)]
+#[template(path = "login.html")]
+pub struct Login<'a> {
+    title: &'a str,
+    version: &'a str,
+}
+
+impl<'a> Default for Login<'a> {
+    fn default() -> Self {
+        Self {
+            title: &crate::TITLE,
+            version: crate::VERSION,
+        }
+    }
+}

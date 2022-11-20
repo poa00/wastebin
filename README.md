@@ -66,6 +66,8 @@ run-time behavior:
 * `WASTEBIN_MAX_BODY_SIZE` number of bytes to accept for POST requests. Defaults
   to 1 MB.
 * `WASTEBIN_TITLE` overrides the HTML page title. Defaults to `wastebin`.
+* `WASTEBIN_JWT_SECRET` string used to derive keys for JWT signage.
+* `WASTEBIN_JWT_ISSUER` string for the JWT issuer.
 * `RUST_LOG` influences logging. Besides the typical `trace`, `debug`, `info`
   etc. keys, you can also set the `tower_http` key to some log level to get
   additional information request and response logs.

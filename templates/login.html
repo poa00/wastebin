@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="center">
+    <p class="text-center">
+      <form action="/login" method="post">
+        <input type="password" id="token" name="token" placeholder="Token">
+      </form>
+    </p>
+    <p class="text-center"><a class="punctuation definition tag" href="/">go back</a></p>
+  </div>
+{% endblock %}

@@ -1,5 +1,5 @@
-use crate::cache;
 use crate::db::{self, Database};
+use crate::{cache, token};
 use axum::body::HttpBody;
 use axum::BoxError;
 use http::Request;
@@ -7,6 +7,7 @@ use hyper::{Body, Server};
 use reqwest::RequestBuilder;
 use std::net::{SocketAddr, TcpListener};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use tower::make::Shared;
 use tower_service::Service;
 
@@ -57,5 +58,6 @@ impl Client {
 pub(crate) fn make_app() -> Result<axum::Router, Box<dyn std::error::Error>> {
     let database = Database::new(db::Open::Memory)?;
     let cache_layer = cache::Layer::new(database.clone(), NonZeroUsize::new(128).unwrap());
-    Ok(crate::make_app(cache_layer, 4096))
+    let issuer = token::Issuer::new(&[1, 2, 3, 4], "test".to_string());
+    Ok(crate::make_app(cache_layer, Arc::new(issuer), 4096))
 }

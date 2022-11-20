@@ -1,21 +1,25 @@
 use crate::cache::{Key, Layer};
 use crate::db::Entry;
 use crate::id::Id;
+use crate::token;
 use crate::{highlight, pages, Error, Router};
 use askama_axum::IntoResponse;
 use axum::body::Body;
-use axum::extract::{Form, Path, Query, RequestParts};
-use axum::headers::{HeaderMapExt, HeaderValue};
+use axum::extract::{Form, Path, Query, RequestParts, TypedHeader};
+use axum::headers::{self, HeaderMapExt, HeaderValue};
 use axum::http::header::{self, HeaderMap};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponseParts, Redirect, Response};
 use axum::routing::get;
-use axum::{headers, Extension, Json, TypedHeader};
+use axum::{Extension, Json};
+use axum_extra::extract::CookieJar;
 use bytes::Bytes;
 use http_body::Limited;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
+use tracing::info;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FormEntry {
@@ -250,6 +254,44 @@ async fn delete(
     Ok(Redirect::to("/"))
 }
 
+#[derive(Deserialize, Debug)]
+struct Login {
+    token: String,
+}
+
+async fn login(
+    issuer: Extension<Arc<token::Issuer>>,
+    form: Option<Form<Login>>,
+) -> Result<impl IntoResponse, pages::ErrorResponse<'static>> {
+    if let Some(login) = form {
+        let user = issuer.verify(&login.token)?;
+        info!(name = user.name, "logged in");
+
+        let cookie = format!("token={}; Secure; SameSite=Strict;", login.token);
+        Ok(([(header::SET_COOKIE, &cookie)], Redirect::to("/")).into_response())
+    } else {
+        Ok(pages::Login::default().into_response())
+    }
+}
+
+async fn dashboard(
+    issuer: Extension<Arc<token::Issuer>>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, pages::ErrorResponse<'static>> {
+    if let Some(token) = jar.get("token") {
+        let user = issuer.verify(token.value())?;
+        println!("{user:?}");
+
+        if matches!(user.role, token::Role::Admin) {
+            Ok("good".into_response())
+        } else {
+            Ok("not good".into_response())
+        }
+    } else {
+        Ok(Redirect::to("/login").into_response())
+    }
+}
+
 fn css_headers() -> impl IntoResponseParts {
     (
         TypedHeader(headers::ContentType::from(mime::TEXT_CSS)),
@@ -268,6 +310,8 @@ fn favicon() -> impl IntoResponse {
 pub fn routes() -> Router {
     Router::new()
         .route("/", get(|| async { index() }).post(insert))
+        .route("/login", get(login).post(login))
+        .route("/dashboard", get(dashboard))
         .route("/:id", get(get_paste).delete(delete))
         .route("/burn/:id", get(|Path(id)| async { pages::Burn::new(id) }))
         .route("/delete/:id", get(delete))
